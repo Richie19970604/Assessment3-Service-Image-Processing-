@@ -1,11 +1,14 @@
-// converter.js - Service B
 require('dotenv').config();
+const express = require('express');  // 添加 Express
 const { S3Client, GetObjectCommand, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws-sdk/client-sqs');
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+
+// 初始化 Express 应用
+const app = express();
 
 // AWS 配置
 const s3Client = new S3Client({ region: process.env.AWS_REGION });
@@ -103,3 +106,9 @@ async function processConversionJob() {
 setInterval(processConversionJob, 5000);
 
 console.log("Service B (File Converter) is running and listening for SQS messages...");
+
+// 启动 Express 服务器监听 8080 端口（仅用于调试或状态检查）
+app.get('/', (req, res) => res.send("Service B is running."));
+app.listen(8080, () => {
+    console.log('Service B HTTP server running on port 8080');
+});
