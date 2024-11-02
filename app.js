@@ -5,21 +5,32 @@ const { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } = require('@aws
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
-const WebSocket = require('ws');
+const axios = require('axios');
 
-// Initialize AWS S3 and SQS clients
+// AWS 配置
 const s3Client = new S3Client({ region: process.env.AWS_REGION });
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION });
 const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
 const S3_BUCKET = process.env.S3_BUCKET;
+const SERVICE_A_URL = process.env.SERVICE_A_URL;  // `Service A` 的 URL
 
-// Initialize WebSocket server on port 8080
-const wss = new WebSocket.Server({ port: 8080 });
-wss.on('connection', (ws) => {
-    ws.send('Welcome to the File Converter Service!');
-});
+// 通知 `Service A` 转换状态
+async function notifyServiceA(username, fileName, status, url = '') {
+    try {
+        await axios.post(`${SERVICE_A_URL}/api/update-status`, {
+            username,
+            fileName,
+            status,
+            url,
+            message: status === 'completed' ? 'File conversion successful' : 'File conversion failed',
+        });
+        console.log(`Status for ${fileName} updated to ${status} in Service A.`);
+    } catch (error) {
+        console.error('Failed to notify Service A:', error);
+    }
+}
 
-// Function to process conversion jobs from SQS
+// 处理文件转换任务
 async function processConversionJob() {
     const receiveCommand = new ReceiveMessageCommand({
         QueueUrl: SQS_QUEUE_URL,
@@ -29,7 +40,7 @@ async function processConversionJob() {
     const response = await sqsClient.send(receiveCommand);
 
     if (!response.Messages) {
-        return; // No messages, return and wait for the next interval
+        return; // 没有消息，返回等待下次轮询
     }
 
     const message = response.Messages[0];
@@ -40,25 +51,24 @@ async function processConversionJob() {
     const outputFileKey = `${username}/${outputFileName}`;
 
     try {
-        // Download file from S3
+        // 从 S3 下载文件
         const downloadCommand = new GetObjectCommand({
             Bucket: S3_BUCKET,
             Key: inputFileKey
         });
         const { Body } = await s3Client.send(downloadCommand);
         
-        // Create a local file stream for downloading
         const inputFilePath = path.join(__dirname, fileName);
         const writeStream = fs.createWriteStream(inputFilePath);
         Body.pipe(writeStream);
 
         await new Promise((resolve) => writeStream.on('finish', resolve));
 
-        // Convert file format using sharp
+        // 使用 sharp 转换文件格式
         const outputFilePath = path.join(__dirname, outputFileName);
         await sharp(inputFilePath).toFormat(format).toFile(outputFilePath);
 
-        // Upload converted file back to S3
+        // 将转换后的文件上传回 S3
         const fileStream = fs.createReadStream(outputFilePath);
         await s3Client.send(new PutObjectCommand({
             Bucket: S3_BUCKET,
@@ -66,22 +76,15 @@ async function processConversionJob() {
             Body: fileStream
         }));
 
-        // Clean up local files
+        // 清理本地临时文件
         fs.unlinkSync(inputFilePath);
         fs.unlinkSync(outputFilePath);
 
-        // Notify clients via WebSocket
-        wss.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.send(JSON.stringify({
-                    message: 'File conversion completed',
-                    file: outputFileName,
-                    url: `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${outputFileKey}`
-                }));
-            }
-        });
+        // 通知 `Service A` 完成状态
+        const fileUrl = `https://${S3_BUCKET}.s3.${process.env.AWS_REGION}.amazonaws.com/${outputFileKey}`;
+        await notifyServiceA(username, outputFileName, 'completed', fileUrl);
 
-        // Delete the processed message from SQS
+        // 从 SQS 删除已处理的消息
         const deleteCommand = new DeleteMessageCommand({
             QueueUrl: SQS_QUEUE_URL,
             ReceiptHandle: message.ReceiptHandle
@@ -91,10 +94,12 @@ async function processConversionJob() {
 
     } catch (error) {
         console.error("Error processing SQS message:", error);
+        // 通知 `Service A` 转换失败
+        await notifyServiceA(username, fileName, 'failed');
     }
 }
 
-// Polling interval to fetch and process SQS messages
+// 设置轮询间隔以处理 SQS 消息
 setInterval(processConversionJob, 5000);
 
 console.log("Service B (File Converter) is running and listening for SQS messages...");
