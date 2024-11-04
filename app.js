@@ -20,6 +20,7 @@ const SERVICE_A_URL = process.env.SERVICE_A_URL;  // `Service A` 的 URL
 // 通知 `Service A` 转换状态
 async function notifyServiceA(username, fileName, status, url = '') {
     try {
+        console.log(`Notifying Service A with data:`, { username, fileName, status, url });
         await axios.post(`${SERVICE_A_URL}/api/update-status`, {
             username,
             fileName,
@@ -32,6 +33,7 @@ async function notifyServiceA(username, fileName, status, url = '') {
         console.error('Failed to notify Service A:', error);
     }
 }
+
 
 // 处理文件转换任务
 async function processConversionJob() {
